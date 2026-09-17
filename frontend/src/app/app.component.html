@@ -1,0 +1,15 @@
+<app-toast-container />
+
+@if (auth.isAuthenticated()) {
+  <header class="app-header">
+    <a routerLink="/files" class="brand">File Storage Service</a>
+    <div class="user-info">
+      <span>{{ auth.displayName() }} <span class="role-badge">{{ auth.role() }}</span></span>
+      <button type="button" (click)="logout()">Sign out</button>
+    </div>
+  </header>
+}
+
+<main class="app-main" [class.app-main--full]="!auth.isAuthenticated()">
+  <router-outlet />
+</main>

@@ -1,0 +1,824 @@
+
+Act as a Senior .NET Engineer and Full-Stack Technical Lead with 10+ years of experience building secure, maintainable production applications using ASP.NET Core, SQL Server, EF Core, and Angular.
+
+Your task is to IMPLEMENT the complete File Storage Service described in the attached Full-Stack Developer Assessment PDF.
+
+Do not stop after producing a plan, architecture diagram, scaffold, or code samples. Create the actual working solution, integrate its components, run the available verification, fix discovered problems, and prepare the repository for technical review.
+
+Demonstrate senior engineering judgment through correct behavior, clear boundaries, security, and documented trade-offs. Keep the implementation practical for an assessment with an estimated 8–12-hour scope.
+
+1. SOURCE OF TRUTH AND WORKING APPROACH
+
+Read the entire attached assessment before making implementation decisions.
+
+The assessment is the source of truth. Distinguish between:
+
+* Explicit assessment requirements.
+* Your implementation decisions.
+* Optional enhancements.
+
+Inspect the existing workspace, repository instructions, installed SDKs, and tooling before changing files. Preserve relevant existing work.
+
+Use the required stack:
+
+* ASP.NET Core 8.
+* Entity Framework Core 8.
+* SQL Server.
+* Angular 17 with standalone components.
+* Local filesystem storage.
+* Docker Compose.
+
+Do not silently upgrade the required framework versions or substitute another database or storage provider.
+
+Resolve routine ambiguities using reasonable assumptions and document them. Ask questions only when a missing decision genuinely blocks implementation.
+
+Start with a concise implementation plan and a requirements checklist, then proceed with the actual work.
+
+2. ARCHITECTURE
+
+Build a single deployable backend using Clean Architecture with four projects:
+
+* FileStorage.Domain.
+* FileStorage.Application.
+* FileStorage.Infrastructure.
+* FileStorage.Api.
+
+Keep dependency direction correct:
+
+* Domain has no dependency on the other projects.
+* Application depends on Domain.
+* Infrastructure depends on Application and Domain.
+* API uses Application and references Infrastructure for composition and dependency registration.
+
+Interpret the assessment’s layer diagram as a separation of responsibilities, not permission to make Application depend on Infrastructure.
+
+Responsibilities:
+
+* Domain: stored-object entity, domain rules, and relevant value objects or enums.
+* Application: use cases, interfaces, DTOs, validation, and authorization-related business rules.
+* Infrastructure: EF Core, SQL Server configuration, migrations, and filesystem implementation.
+* API: endpoints, authentication, authorization, HTTP behavior, ProblemDetails, and middleware.
+
+Keep controllers thin.
+
+Use dependency injection correctly:
+
+* DbContext and database-dependent services should be scoped.
+* Do not inject scoped services into singletons.
+* Singleton services must be thread-safe.
+* Propagate cancellation tokens through relevant asynchronous operations.
+
+Avoid unnecessary microservices, message brokers, generic repositories, custom frameworks, or abstractions that only wrap existing APIs without adding value.
+
+MediatR, AutoMapper, and similar libraries are optional. Use them only when justified.
+
+3. DATABASE AND METADATA
+
+Implement EF Core 8 code-first migrations with SQL Server.
+
+The StoredObjects model must include:
+
+* Id: GUID.
+* Key: unique, server-generated storage key.
+* OriginalName.
+* SizeBytes.
+* ContentType.
+* Checksum: SHA-256.
+* Tags.
+* CreatedAtUtc.
+* DeletedAtUtc: nullable.
+* Version: use an initial value of 1; full version history is optional.
+* CreatedByUserId.
+
+Use UTC consistently.
+
+Configure explicit column lengths, required fields, a unique index for the storage key, and useful indexes for the actual listing queries.
+
+Choose a practical tag-storage approach. Explain how tags are normalized, queried, and deduplicated. Avoid tag matching based on accidental substring matches.
+
+Use bounded, parameterized EF Core queries. Apply AsNoTracking to read-only queries where appropriate.
+
+Default listings must exclude soft-deleted records.
+
+Use deterministic sorting for pagination, with an ID tie-breaker.
+
+Commit the migrations. Do not use EnsureCreated as a substitute for migrations.
+
+4. LOCAL FILE STORAGE AND STREAMING
+
+Store files using a server-controlled layout such as:
+
+_storage/yyyy/MM/dd/{objectId}/content.bin
+
+The object-specific directory must prevent collisions between files uploaded on the same day.
+
+Make the storage root configurable and keep it outside the public web root.
+
+Implement genuine streaming uploads:
+
+* Parse multipart uploads using a streaming approach such as MultipartReader.
+* Do not rely on IFormFile model binding that buffers uploads.
+* Do not read the whole file into a byte array, MemoryStream, string, or Base64 representation.
+* Bounded reusable buffers are acceptable.
+* Compute SHA-256 incrementally while writing.
+* Count the actual bytes read.
+* Enforce the configured file-size limit even when Content-Length is absent or inaccurate.
+* Bound multipart headers, field sizes, section counts, filenames, and tag input.
+* Define behavior for missing file parts, multiple file parts, and empty files.
+* Clean up partial files after errors or cancellation.
+
+Support a real upload of at least 100 MB with the default demonstration configuration. State whether the configured units are decimal MB or binary MiB.
+
+Align file-size limits with API server and reverse-proxy request limits, allowing for multipart overhead.
+
+Implement atomic writes:
+
+* Write to a unique temporary file.
+* Place temporary and final files on the same filesystem.
+* Close the completed stream before moving it to the final path.
+* Commit the content with an atomic rename or equivalent supported operation.
+* Never expose a partially uploaded file.
+
+SQL Server and the filesystem do not share a transaction. Explicitly handle:
+
+* File write failure.
+* Database persistence failure.
+* Request cancellation.
+* Filesystem rename failure.
+* Process crashes between filesystem and database operations.
+
+Use practical compensation and a documented recovery or reconciliation strategy. Clearly distinguish failures handled immediately from crash windows handled later.
+
+Do not claim a database transaction makes filesystem operations transactional.
+
+5. FILESYSTEM SECURITY
+
+Never construct filesystem paths from user-provided filenames or route values.
+
+Use opaque, server-generated keys. Resolve paths under the configured storage root and verify containment correctly.
+
+Sanitize the original filename for display and response headers:
+
+* Remove path components.
+* Reject or remove control characters.
+* Prevent response-header injection.
+* Apply a reasonable length limit.
+
+Account for both slash and backslash traversal attempts.
+
+Document that storage directories are application-controlled and must not be writable by untrusted users. Avoid following unexpected symbolic links or reparse points where relevant.
+
+Do not trust a client-supplied content type as proof of file contents.
+
+Define a configurable upload policy for:
+
+* Maximum size.
+* Allowed extensions and/or content types.
+* Filename length.
+* Tag count and tag length.
+
+For inline previews, use a conservative allowlist and suitable content validation. Do not serve HTML or SVG inline as trusted application content.
+
+Keep arbitrary downloads as attachments and set appropriate security headers, including X-Content-Type-Options.
+
+Do not expose physical storage paths, secrets, or stack traces to clients.
+
+6. AUTHENTICATION AND AUTHORIZATION
+
+Implement JWT bearer authentication with the exact roles:
+
+* user.
+* admin.
+
+Include a stable user identifier and role claims.
+
+Validate:
+
+* Signature.
+* Issuer.
+* Audience.
+* Expiration.
+
+The assessment requests a mock JWT login and does not require a real authentication system.
+
+Use this practical interpretation:
+
+* Implement an Angular demo login screen.
+* Let it obtain a correctly signed mock JWT from a small development-only token endpoint.
+* Keep signing secrets on the backend.
+* Use fixed demo identities and role selection.
+* Do not add real registration, password management, or a production identity system.
+
+Document this interpretation explicitly because the assessment describes the login screen as generating a mock JWT.
+
+Do not place an HMAC signing secret in Angular, accept unsigned tokens, or disable JWT validation to make the demonstration work.
+
+Gate mock token issuance behind an explicit development/demo setting. The supplied Compose environment may enable it for assessment use; explain how it is disabled outside that environment.
+
+Unless the PDF specifies a different policy, use:
+
+* Users can upload files and access or soft-delete their own files.
+* Admins can access all files.
+* Hard deletion is restricted to admins.
+* Soft-deleted files are unavailable through normal list, preview, and download operations.
+
+Enforce all authorization on the backend. Frontend guards and hidden buttons are only UI controls.
+
+Choose and consistently apply 403 or 404 behavior for authenticated attempts to access another user’s file, documenting any resource-existence privacy decision.
+
+7. API CONTRACT
+
+Implement every required endpoint:
+
+POST /api/files
+GET /api/files
+GET /api/files/{id}/download
+GET /api/files/{id}/preview
+DELETE /api/files/{id}
+DELETE /api/files/{id}/hard
+GET /health/live
+GET /health/ready
+
+Add a metadata endpoint if needed for a directly navigable preview page. Document it as a supporting endpoint.
+
+Upload:
+
+* Accept multipart/form-data containing one file and optional tags.
+* Return 201 Created with useful metadata.
+* If providing a Location header, ensure it points to a real endpoint.
+
+Listing:
+
+* Pagination with validated bounds.
+* Filters for name, tag, content type, and date range.
+* A response containing items, page number, page size, and total count.
+* Document date-boundary and filter-matching semantics.
+* Avoid loading the entire table before filtering or pagination.
+
+Download:
+
+* Stream from disk.
+* Support HTTP Range requests.
+* Return correct Content-Type and Content-Disposition headers.
+* Use the sanitized original filename for downloads.
+* Ensure stream lifetime is compatible with response execution.
+* Verify 200, 206 Partial Content, and 416 Range Not Satisfiable behavior.
+* Prefer the framework’s range-processing facilities over handwritten parsing.
+
+Preview:
+
+* Apply the same authentication, ownership, and deletion checks as download.
+* Permit inline preview only for supported safe image formats and PDFs.
+* Use suitable response headers.
+* Provide a clear response for unsupported preview types.
+
+Soft delete:
+
+* Record DeletedAtUtc.
+* Preserve file content.
+* Define repeated-delete behavior.
+
+Hard delete:
+
+* Enforce the admin policy.
+* Remove physical content and database metadata with a documented consistency strategy.
+* Define behavior when the physical file is already missing.
+* Define whether an admin must soft-delete first; expose the same rule in the UI.
+* Avoid silently treating unexpected I/O errors as successful deletion.
+
+8. VALIDATION AND ERROR HANDLING
+
+Use centralized RFC 7807 ProblemDetails responses.
+
+Use appropriate statuses, including:
+
+* 400 for invalid request data.
+* 401 for missing or invalid authentication.
+* 403 for forbidden actions where applicable.
+* 404 for missing or inaccessible resources according to the documented policy.
+* 409 for genuine state conflicts.
+* 413 for oversized uploads.
+* 415 for unsupported request media types.
+* 500 for unexpected internal failures.
+
+Document the status used for files rejected by the upload policy.
+
+Do not return 200 responses with an embedded failure flag.
+
+Use consistent fields:
+
+* type.
+* title.
+* status.
+* detail when safe.
+* instance.
+* traceId or correlationId.
+* Validation errors when applicable.
+
+Do not wrap successful JSON responses and binary file responses in an unnecessary universal response envelope.
+
+Handle request cancellation appropriately. Do not report an ordinary client disconnect as an unexpected server failure.
+
+9. LOGGING AND HEALTH CHECKS
+
+Implement structured logging and correlation IDs.
+
+Accept a valid, bounded correlation ID or generate one. Include it in the response and logging scope.
+
+Log useful operational events:
+
+* Upload completion or failure.
+* File ID, byte count, and operation duration.
+* Authorization failures where appropriate.
+* Soft and hard deletion outcomes.
+* Unexpected storage failures.
+
+Never log JWTs, signing keys, file contents, or other secrets.
+
+Implement:
+
+* /health/live: confirms the process is alive without depending on SQL Server.
+* /health/ready: verifies database connectivity and filesystem read/write capability.
+
+The filesystem readiness check must create, write, read, and remove a unique temporary probe file safely. It must tolerate concurrent probes and never touch user files.
+
+10. ANGULAR 17 APPLICATION
+
+Use standalone components and a clear feature structure:
+
+* core/.
+* shared/.
+* storage/.
+
+Implement:
+
+* Demo login.
+* Authentication state.
+* Bearer-token interceptor restricted to the intended API.
+* Route guards.
+* Role-aware UI.
+* Centralized API error handling.
+* Toast notifications.
+
+File upload:
+
+* Drag and drop.
+* Standard file picker.
+* Client-side validation for immediate feedback.
+* Actual HTTP upload progress.
+* Uploading, success, failure, and retry states.
+* A deliberate retry action for recoverable failures.
+* Prevention of accidental duplicate submissions.
+* Clear behavior when a network failure leaves the upload outcome uncertain.
+
+Do not blindly retry uploads in an interceptor. Either implement a small, documented idempotency mechanism or explain how the UI handles potentially completed requests.
+
+File listing:
+
+* Pagination.
+* Name, tag, content-type, and date filters.
+* Loading, empty, and error states.
+* Debounced text filtering.
+* Cancellation of obsolete list requests.
+* Resetting pagination appropriately when filters change.
+
+File preview:
+
+* A routable page that works after browser refresh.
+* Image preview.
+* PDF preview.
+* File metadata.
+* Download action.
+* Unsupported-preview fallback.
+
+Do not assume an img or iframe request automatically includes the Authorization header. Implement an authenticated preview strategy.
+
+If using object URLs:
+
+* Revoke them when replaced or destroyed.
+* Document memory implications.
+* Limit large previews and provide download fallback where needed.
+
+Deletion:
+
+* Confirmation before destructive actions.
+* Soft delete for authorized users.
+* Hard delete controls for admins.
+* Correct list updates after operations.
+
+Use strict TypeScript, typed API contracts, and reactive forms where appropriate.
+
+Prefer async pipe, signals, or takeUntilDestroyed for subscription management. Avoid nested subscriptions and memory leaks.
+
+Choose an HTTP backend that supports upload-progress events in Angular 17. Do not simulate progress.
+
+Create a clean, responsive, accessible interface with readable metadata, clear states, keyboard-accessible controls, and consistent spacing.
+
+11. DOCKER AND CONFIGURATION
+
+Provide Dockerfiles and docker-compose.yml that run:
+
+* SQL Server.
+* Backend API.
+* Angular frontend through an appropriate web server.
+
+Use multi-stage builds where appropriate.
+
+Persist:
+
+* SQL Server data.
+* Uploaded files.
+
+Verify that uploaded files and metadata remain available after normal container restart or recreation with the same volumes.
+
+Provide:
+
+* .env.example with placeholders.
+* Sensible development defaults.
+* Explicit secret configuration.
+* Correct service names and networking.
+* Health-aware startup behavior.
+* A documented migration-application mechanism.
+* Correct filesystem ownership and permissions.
+
+Do not commit real credentials.
+
+Make the documented startup flow work without undocumented manual fixes.
+
+Configure frontend routing fallback and API proxying correctly. Prefer same-origin API access through the frontend proxy where practical.
+
+Ensure the proxy permits the configured upload size and supports streaming without buffering the entire upload first.
+
+Document any relevant SQL Server container architecture limitations rather than promising universal host compatibility.
+
+12. TESTING AND VERIFICATION
+
+Write meaningful tests around the important risks.
+
+Unit tests should cover relevant examples such as:
+
+* Filename handling.
+* Storage-key or path-containment rules.
+* Upload policy validation.
+* Ownership rules.
+* Deletion rules.
+* SHA-256 correctness.
+* Important failure-cleanup logic.
+
+Integration tests should verify:
+
+* Upload metadata and downloaded byte integrity.
+* Listing, pagination, and filters.
+* Authentication and authorization.
+* Cross-user access restrictions.
+* Soft-delete behavior.
+* Admin-only hard delete.
+* Oversized uploads.
+* Invalid multipart input.
+* Range requests and unsatisfiable ranges.
+* Cleanup after representative storage or persistence failures.
+
+Use real SQL Server for database-specific integration verification when possible. Do not present EF Core InMemory tests as evidence that SQL Server behavior works.
+
+Implement at least one real browser end-to-end test:
+login → upload → list → download.
+
+The required end-to-end test must exercise the real API and verify that downloaded content matches the uploaded content.
+
+Include a reproducible 100 MB streaming verification procedure or automated test. Generate the test file programmatically rather than committing a large binary.
+
+Record actual results and explain the method used to assess memory behavior. Do not invent performance measurements.
+
+Run:
+
+* Backend restore and build.
+* Backend tests.
+* Frontend production build.
+* Relevant frontend tests.
+* End-to-end test when the environment supports it.
+* Docker Compose validation and smoke test when available.
+
+If a check cannot run, report the exact limitation and the command a reviewer can run. Do not claim it passed.
+
+13. DOCUMENTATION AND DELIVERABLES
+
+Deliver:
+
+* Complete backend solution.
+* Complete Angular frontend.
+* EF Core migrations.
+* Dockerfiles.
+* docker-compose.yml.
+* .env.example.
+* Automated tests.
+* README.md.
+* A concise assessment requirements checklist.
+
+README.md must include:
+
+* Project purpose.
+* Prerequisites.
+* Docker startup instructions.
+* Local development instructions.
+* Configuration and environment variables.
+* Database migration commands.
+* Demo login and role behavior.
+* Architecture overview and dependency direction.
+* API summary and practical request examples.
+* Storage layout.
+* Streaming approach.
+* Database/filesystem consistency strategy.
+* Authorization and preview security decisions.
+* Error-response examples.
+* Test commands and actual verification status.
+* 100 MB upload verification.
+* Assumptions.
+* Known limitations.
+* Future enhancements.
+
+Explain the major decisions clearly enough that the candidate can discuss them in a technical interview.
+
+Prepare the repository for submission, but do not create or publish an external repository without authorization.
+
+14. PRIORITIES AND OPTIONAL FEATURES
+
+Prioritize the assessment’s scoring:
+
+* Architecture: 20 points.
+* Backend correctness: 20 points.
+* Security, validation, and errors: 15 points.
+* Frontend architecture and UX: 15 points.
+* Coding style and maintainability: 10 points.
+* Streaming and filesystem safety: 10 points.
+* Tests: 5 points.
+* Documentation: 5 points.
+
+Complete required behavior before optional work.
+
+Optional bonuses:
+
+* ETag-based caching.
+* Audit log.
+* Resumable uploads.
+
+Only add bonuses when core functionality is working and verified. Resumable uploads must not jeopardize completion of the required assessment.
+
+15. DEFINITION OF DONE AND FINAL HANDOVER
+
+Before finishing:
+
+* Review the implementation against every assessment requirement.
+* Inspect the final diff.
+* Remove dead code and misleading placeholders.
+* Check that no secrets are committed.
+* Verify API and Angular contracts agree.
+* Verify configured size limits agree across application and proxy.
+* Verify authorization applies to all file access paths.
+* Verify temporary-file and object-URL cleanup.
+* Verify the README matches the actual implementation.
+
+Do not leave core requirements as TODOs, mock the real storage operations, fabricate test results, or describe unfinished features as complete.
+
+Your final response must state:
+
+* What was implemented.
+* Where the main components are located.
+* How to start the solution.
+* How to use the demo login.
+* Which checks actually passed.
+* Which checks were blocked and why.
+* Any remaining limitations.
+* The most important design decisions and trade-offs.
+
+16. REQUIRED CLAUDE CODE TOOLS AND WORKFLOW
+
+Apply this section together with every requirement in the original prompt. Read it before starting implementation.
+
+Use the following commands and tools throughout the project, at the appropriate milestones:
+
+* /gstack-upgrade
+* /office-hours
+* /graphify
+* /graphify --update
+* /learn
+* /code-review
+* /review
+* /clear
+* Playwright MCP
+
+These tools support implementation and verification. Their use does not replace any assessment requirement.
+
+A. Discover the installed capabilities
+
+Before implementation, inspect the available commands, skills, plugin instructions, and MCP connections.
+
+For each requested tool, establish:
+
+* Whether it is installed and available.
+* Which provider implements it.
+* Its supported arguments.
+* Whether it operates on local files, a Git diff, or a pull request.
+* Whether the agent can invoke it directly or the user must run it interactively.
+
+Use the actual registered command names, including namespaces where necessary.
+
+Do not assume that mentioning a slash command in a message executes it. Invoke the corresponding capability through its supported mechanism.
+
+If something is missing, identify its verified installation or configuration steps. Complete setup when possible within the authorized environment. If credentials, user interaction, or unavailable dependencies block setup, report that specific blocker and continue independent implementation work.
+
+Never claim that an unavailable tool ran successfully.
+
+B. Initialize gstack
+
+Run /gstack-upgrade at the beginning if the installed gstack capability is available.
+
+Preserve local customizations and inspect the upgrade outcome. If a restart is required, save a checkpoint before restarting.
+
+This upgrade applies to the development tooling. Keep the assessment’s application versions fixed:
+
+* ASP.NET Core 8.
+* EF Core 8.
+* Angular 17.
+
+Avoid repeatedly upgrading tools during implementation unless resolving a specific problem.
+
+Reference: https://github.com/garrytan/gstack
+
+C. Clarify the design with /office-hours
+
+Use /office-hours before substantial implementation.
+
+Treat the assessment PDF as a fixed project brief. Focus the discussion on:
+
+* Required workflows.
+* Acceptance criteria.
+* Authorization assumptions.
+* Mock JWT implementation.
+* Streaming uploads and Range downloads.
+* Filesystem/database consistency.
+* Security boundaries.
+* Practical delivery scope.
+
+Record the resulting decisions in docs/architecture-decisions.md.
+
+Use the answers already provided in the assessment and original prompt. Ask the user only about unresolved decisions that materially block progress.
+
+Avoid expanding this exercise into unrelated product discovery or additional features.
+
+Reference: https://github.com/garrytan/gstack/blob/main/office-hours/SKILL.md
+
+D. Map the project with Graphify
+
+Run /graphify against the existing project when meaningful source code is present. For a new repository, perform the initial mapping after creating the first meaningful implementation structure.
+
+Use the graph to investigate:
+
+* Backend project dependencies.
+* Application interfaces and infrastructure implementations.
+* API endpoints and their use cases.
+* Angular routes, components, and services.
+* Authentication and authorization paths.
+* Relevant tests and documentation.
+
+Confirm how the installed Graphify version handles C# and TypeScript. Do not claim complete dependency coverage when a language or relationship is unsupported.
+
+Use graph findings to guide inspection, then verify important conclusions against the source files.
+
+Run /graphify --update:
+
+* After substantial architectural changes.
+* After major backend and frontend milestones.
+* After changes affecting important documentation.
+* Before the final review.
+
+Use the installed version’s documented path arguments if required. Avoid rebuilding after every small edit.
+
+Exclude uploaded file contents, secrets, dependency directories, and build outputs from indexing.
+
+Reference: https://github.com/Graphify-Labs/graphify
+
+E. Apply /learn throughout the work
+
+Use /learn at meaningful milestones to capture verified project knowledge:
+
+* Architectural decisions and their reasons.
+* Environment-specific setup issues.
+* Confirmed root causes and fixes.
+* Security-sensitive implementation rules.
+* Reliable build, migration, and test commands.
+
+Read the installed /learn instructions first and use its supported storage mechanism.
+
+Keep the project’s essential operational knowledge accessible in the repository. Update existing guidance carefully rather than replacing unrelated instructions.
+
+Record observed facts and useful lessons. Do not store secrets, speculative conclusions, or claim that this command retrains the underlying model.
+
+Reference: https://github.com/garrytan/gstack/blob/main/learn/SKILL.md
+
+F. Use /code-review and /review as quality gates
+
+Resolve the actual implementation of both commands before invoking them.
+
+If /review resolves to the gstack review skill, use its registered name for the final engineering review.
+
+If /review and /code-review resolve to the same capability, state that explicitly. Use separate review milestones where useful; do not present duplicate invocations as independent reviewers.
+
+Run /code-review after meaningful implementation milestones. Review:
+
+* Correctness and missing requirements.
+* Clean Architecture dependency boundaries.
+* DI lifetimes and asynchronous code.
+* Streaming behavior and resource disposal.
+* Ownership and admin authorization.
+* Path traversal prevention.
+* Database/filesystem consistency.
+* Angular state handling and subscription cleanup.
+
+Use /review before final handover to inspect the integrated implementation, Docker setup, documentation, and remaining assessment gaps.
+
+Ensure newly created and untracked source files are included in the review scope; a tracked diff alone may miss most of a new project.
+
+If an installed review tool requires a pull request, do not create or publish one merely to satisfy that tool. Report the limitation and perform a clearly identified local review.
+
+Keep review findings local unless publication is explicitly authorized.
+
+Fix confirmed issues, rerun affected verification, and record unresolved findings with their practical impact.
+
+G. Verify the application using Playwright MCP
+
+Use the connected Microsoft Playwright MCP server to interact with the running Angular application and real backend.
+
+Verify:
+
+* Demo login as user and admin.
+* Upload through the file picker and drag-and-drop interface.
+* Progress feedback, validation, and recoverable failure handling.
+* File listing, pagination, and filters.
+* Image and PDF previews.
+* Downloads.
+* Soft-delete behavior.
+* Admin hard-delete behavior.
+* Role-aware controls.
+* Loading, empty, and error states.
+* Relevant browser console errors and failed network requests.
+* Usability at desktop and mobile viewport sizes.
+
+Use isolated test identities and disposable test files.
+
+Browser checks must exercise actual functionality. Do not replace backend responses with mocks for the required upload → list → download flow.
+
+Save useful evidence and fix discovered defects.
+
+Also implement a committed, repeatable Playwright end-to-end test that verifies downloaded content matches uploaded content. Interactive MCP exploration alone does not satisfy the automated E2E requirement.
+
+Verify backend-only risks, including Range responses, cross-user access, and streaming limits, through appropriate API and integration tests.
+
+Reference: https://github.com/microsoft/playwright-mcp
+
+H. Handle /clear through a saved checkpoint
+
+Use /clear only for an intentional fresh conversation between major phases.
+
+Before clearing, save docs/agent-handoff.md containing:
+
+* Original prompt and assessment file locations.
+* Current implementation status.
+* Decisions and assumptions.
+* Files and modules changed.
+* Commands actually executed and their results.
+* Remaining review findings.
+* Running services and ports.
+* Exact next steps.
+
+Ensure the original prompt remains saved as PROMPT.md.
+
+If /clear requires user interaction, provide the checkpoint and the exact command for the user to run. Do not claim to have cleared the conversation yourself.
+
+After clearing, the next session must reload PROMPT.md, the assessment, repository instructions, and docs/agent-handoff.md before continuing.
+
+When the goal is simply to reduce context usage while continuing the same task, prefer /compact where supported.
+
+Reference: https://code.claude.com/docs/en/commands
+
+I. Final evidence and completion
+
+Maintain a concise docs/tooling-report.md showing:
+
+* Requested tool or command.
+* Actual provider and registered name.
+* Milestone where it was used.
+* Outcome and relevant evidence.
+* Any blocker or fallback.
+
+Complete the workflow in this order:
+capability discovery, tooling setup, design clarification, implementation and mapping, milestone reviews, browser verification, fixes, final review, and handover.
+
+Use /learn and graph updates at relevant milestones. Use /clear only under the checkpoint procedure above.
+
+Finish with working software and honest verification results. Tool invocation counts are not a substitute for a complete, correct assessment.
+
+
+Begin by inspecting the PDF and workspace, then implement the complete solution.
+
+
+

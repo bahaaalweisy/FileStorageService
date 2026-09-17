@@ -1,0 +1,56 @@
+<a routerLink="/files" class="back-link">&larr; Back to files</a>
+
+@if (state() === 'error') {
+  <p class="state-message state-message--error" role="alert">
+    Could not load this file. It may not exist, may belong to another user, or may have been deleted.
+  </p>
+} @else {
+  @if (metadata(); as file) {
+    <div class="preview-page">
+      <div class="preview-pane">
+        @switch (state()) {
+          @case ('loading') {
+            <p class="state-message">Loading preview…</p>
+          }
+          @case ('image') {
+            <img [src]="objectUrl()" [alt]="file.originalName" class="preview-image" />
+          }
+          @case ('pdf') {
+            <iframe [src]="trustedPdfUrl()" title="PDF preview" class="preview-pdf"></iframe>
+          }
+          @case ('unsupported') {
+            <div class="state-message">
+              <p>{{ unsupportedReason() }}</p>
+              <button type="button" (click)="download()">Download instead</button>
+            </div>
+          }
+        }
+      </div>
+
+      <aside class="metadata-pane">
+        <h2>{{ file.originalName }}</h2>
+        <dl>
+          <dt>Size</dt>
+          <dd>{{ formatBytes(file.sizeBytes) }}</dd>
+          <dt>Content type</dt>
+          <dd>{{ file.contentType }}</dd>
+          <dt>Uploaded</dt>
+          <dd>{{ file.createdAtUtc | date: 'medium' }}</dd>
+          <dt>Checksum (SHA-256)</dt>
+          <dd class="checksum">{{ file.checksum }}</dd>
+          <dt>Version</dt>
+          <dd>{{ file.version }}</dd>
+          @if (file.tags.length > 0) {
+            <dt>Tags</dt>
+            <dd>
+              @for (tag of file.tags; track tag) {
+                <span class="tag">{{ tag }}</span>
+              }
+            </dd>
+          }
+        </dl>
+        <button type="button" (click)="download()">Download</button>
+      </aside>
+    </div>
+  }
+}

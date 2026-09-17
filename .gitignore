@@ -1,0 +1,24 @@
+bin/
+obj/
+*.user
+
+node_modules/
+frontend/dist/
+frontend/.angular/
+
+tests/e2e/node_modules/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+TestResults/
+
+_storage/
+_storage-dev/
+.env
+
+.vs/
+.vscode/
+*.swp
+
+# Local AI-assistant tooling config/output, not part of the project deliverable.
+.claude/
+graphify-out/
