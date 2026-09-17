@@ -13,3 +13,16 @@ public sealed class ObjectAlreadyDeletedException : DomainException
     {
     }
 }
+
+public sealed class UploadSessionNotUsableException : DomainException
+{
+    public Guid SessionId { get; }
+    public string Status { get; }
+
+    public UploadSessionNotUsableException(Guid sessionId, string status)
+        : base($"Upload session '{sessionId}' is not usable (status: {status}).")
+    {
+        SessionId = sessionId;
+        Status = status;
+    }
+}

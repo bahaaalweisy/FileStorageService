@@ -29,6 +29,7 @@ builder.Services.AddInfrastructure(builder.Configuration);
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
+builder.Services.AddScoped<ICorrelationIdAccessor, CorrelationIdAccessor>();
 builder.Services.AddSingleton<MockTokenService>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

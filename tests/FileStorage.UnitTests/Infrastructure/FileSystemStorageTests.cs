@@ -153,14 +153,6 @@ public class FileSystemStorageTests : IDisposable
         Directory.GetFiles(healthDir).Should().BeEmpty();
     }
 
-    // Note: a readiness-probe-failure test belongs here in principle, but FileSystemStorage's
-    // constructor eagerly calls Directory.CreateDirectory(rootPath) (StoragePathResolver.cs:14),
-    // so any attempt to construct it with an unusable root throws before CheckReadWriteAsync can
-    // even run. The genuine failure-mode test lives instead in
-    // FileStorage.IntegrationTests/HealthCheckTests.cs, which blocks the probe's "_health"
-    // subdirectory (created lazily, inside CheckReadWriteAsync) and asserts /health/ready fails
-    // closed through the real HTTP pipeline.
-
     public void Dispose()
     {
         if (Directory.Exists(_root))

@@ -5,6 +5,8 @@ public interface ICurrentUser
     string UserId { get; }
 
     bool IsAdmin { get; }
+
+    string Role { get; }
 }
 
 public interface IClock

@@ -66,14 +66,7 @@ public class ListingTests : IntegrationTestBase
     [Fact]
     public async Task List_FiltersByDateRange_TreatingOffsetlessValuesAsUtc()
     {
-        // Regression test: a query-string "from"/"to" value with no timezone offset (exactly
-        // what a native <input type="date"> sends, e.g. "2026-09-17") used to bind as a
-        // DateTime with Kind=Unspecified and then get passed through DateTime.ToUniversalTime(),
-        // which treats Unspecified as the SERVER's local time zone rather than as UTC. On a
-        // host whose local time zone is not UTC, that silently shifted the filter boundary by
-        // the host's UTC offset, making "from" far more lenient than intended. This test proves
-        // an offsetless "from" one day after now correctly excludes a file uploaded now,
-        // regardless of the test host's local time zone.
+
         var client = Client;
         var token = await TestHelpers.GetTokenAsync(client, "user");
         TestHelpers.AuthorizeAs(client, token);

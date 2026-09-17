@@ -11,6 +11,17 @@ public sealed class StorageKeyCollisionException : Exception
     }
 }
 
+public sealed class ChunkOffsetMismatchException : Exception
+{
+    public long ExpectedOffset { get; }
+
+    public ChunkOffsetMismatchException(long expectedOffset)
+        : base($"Chunk must start at offset {expectedOffset} (the next byte after what has already been durably written).")
+    {
+        ExpectedOffset = expectedOffset;
+    }
+}
+
 public interface IFileStorage
 {
     Task<StagedFile> StageAsync(Stream source, long maxSizeBytes, CancellationToken cancellationToken);
@@ -24,4 +35,10 @@ public interface IFileStorage
     Task<bool> DeleteContentAsync(string key, DateTime createdAtUtc, CancellationToken cancellationToken);
 
     Task<FileSystemProbeResult> CheckReadWriteAsync(CancellationToken cancellationToken);
+
+    string GetUploadSessionTempPath(Guid sessionId);
+
+    Task<long> AppendChunkAsync(string tempPath, long expectedOffset, Stream chunkData, long maxTotalBytes, CancellationToken cancellationToken);
+
+    Task<string> ComputeChecksumAsync(string tempPath, CancellationToken cancellationToken);
 }

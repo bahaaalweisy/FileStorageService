@@ -5,10 +5,10 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace FileStorage.Infrastructure.Persistence.Migrations
 {
-    /// <inheritdoc />
+
     public partial class InitialCreate : Migration
     {
-        /// <inheritdoc />
+
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
@@ -54,7 +54,7 @@ namespace FileStorage.Infrastructure.Persistence.Migrations
                 columns: new[] { "CreatedByUserId", "DeletedAtUtc", "CreatedAtUtc", "Id" });
         }
 
-        /// <inheritdoc />
+
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(

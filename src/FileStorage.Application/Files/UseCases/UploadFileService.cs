@@ -28,6 +28,7 @@ public sealed class UploadFileService
     private readonly IClock _clock;
     private readonly UploadPolicyOptions _policy;
     private readonly ILogger<UploadFileService> _logger;
+    private readonly IAuditLogWriter _auditLog;
 
     public UploadFileService(
         IFileStorage fileStorage,
@@ -35,7 +36,8 @@ public sealed class UploadFileService
         IStorageKeyGenerator keyGenerator,
         IClock clock,
         IOptions<UploadPolicyOptions> policy,
-        ILogger<UploadFileService> logger)
+        ILogger<UploadFileService> logger,
+        IAuditLogWriter auditLog)
     {
         _fileStorage = fileStorage;
         _repository = repository;
@@ -43,6 +45,7 @@ public sealed class UploadFileService
         _clock = clock;
         _policy = policy.Value;
         _logger = logger;
+        _auditLog = auditLog;
     }
 
     public async Task<StagedUpload> StageAsync(string originalFileName, string contentType, Stream content, CancellationToken cancellationToken)
@@ -116,6 +119,14 @@ public sealed class UploadFileService
         _logger.LogInformation(
             "Upload completed. FileId={FileId} Bytes={Bytes} DurationMs={DurationMs}",
             entity.Id, entity.SizeBytes, durationMs);
+
+        await _auditLog.RecordAsync(
+            operation: "FileUpload",
+            resourceId: entity.Id.ToString(),
+            resourceType: "StoredObject",
+            outcome: AuditOutcome.Success,
+            detail: $"{entity.SizeBytes} bytes, {entity.ContentType}",
+            cancellationToken);
 
         return Map(entity);
     }

@@ -9,9 +9,26 @@ namespace FileStorage.IntegrationTests.Infrastructure;
 
 public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
 {
-    public string StorageRoot { get; } = Path.Combine(Path.GetTempPath(), "filestorage-it-" + Guid.NewGuid().ToString("N"));
+    public string StorageRoot { get; }
 
-    private readonly string _databaseName = "FileStorageIntegrationTests_" + Guid.NewGuid().ToString("N");
+    private readonly string _databaseName;
+    private readonly bool _ownsDatabase;
+
+    public CustomWebApplicationFactory()
+        : this(Path.Combine(Path.GetTempPath(), "filestorage-it-" + Guid.NewGuid().ToString("N")),
+               "FileStorageIntegrationTests_" + Guid.NewGuid().ToString("N"),
+               ownsDatabase: true)
+    {
+    }
+
+    public CustomWebApplicationFactory(string storageRoot, string databaseName, bool ownsDatabase)
+    {
+        StorageRoot = storageRoot;
+        _databaseName = databaseName;
+        _ownsDatabase = ownsDatabase;
+    }
+
+    public string DatabaseName => _databaseName;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -47,15 +64,24 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
 
         if (disposing)
         {
-            try
+            if (_ownsDatabase)
             {
-                using var scope = Services.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                Microsoft.Data.SqlClient.SqlConnection.ClearAllPools();
-                db.Database.EnsureDeleted();
+                try
+                {
+                    using var scope = Services.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    Microsoft.Data.SqlClient.SqlConnection.ClearAllPools();
+                    db.Database.EnsureDeleted();
+                }
+                catch
+                {
+                }
             }
-            catch
+
+            if (!_ownsDatabase)
             {
+
+                return;
             }
 
             if (Directory.Exists(StorageRoot))

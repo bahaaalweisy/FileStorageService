@@ -29,11 +29,15 @@ public sealed record DownloadInfoDto(
     string PhysicalPath,
     string ContentType,
     string SanitizedFileName,
-    long SizeBytes);
+    long SizeBytes,
+    string Checksum,
+    DateTime CreatedAtUtc);
 
 public sealed record PreviewInfoDto(
     bool Supported,
     string? PhysicalPath,
     string? ContentType,
     long SizeBytes,
-    string Reason);
+    string Reason,
+    string? Checksum = null,
+    DateTime? CreatedAtUtc = null);

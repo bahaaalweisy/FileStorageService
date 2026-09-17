@@ -61,10 +61,12 @@ files persist in the `storage_data` named volume and SQL Server data in
 `sqlserver_data`; both survive `docker compose down` (without `-v`) and container
 recreation.
 
-**This could not be executed in the environment this was built in** — Docker is not
-installed there. The Dockerfiles and compose file were written carefully and reviewed,
-but "the documented startup flow works without undocumented manual fixes" has not been
-verified end-to-end. See [Known limitations](#known-limitations) for exactly what was
+**This has not been executed end-to-end in the environment this was built in.** As of
+2026-09-17 the Docker CLI is installed (`docker --version` → 29.8.0) but the Docker
+Desktop engine/daemon is not reachable from this shell, so `docker compose up --build`
+could not actually be run. The Dockerfiles and compose file were written carefully and
+reviewed, but "the documented startup flow works without undocumented manual fixes"
+remains unverified. See [Known limitations](#known-limitations) for exactly what was
 and wasn't verified, and the commands to verify it yourself.
 
 ## Local development
@@ -192,10 +194,23 @@ why).
 | `GET` | `/api/files/{id}/preview` | user/admin | inline, images + PDF only |
 | `DELETE` | `/api/files/{id}` | user/admin | soft delete |
 | `DELETE` | `/api/files/{id}/hard` | admin | hard delete, requires prior soft delete |
+| `POST` | `/api/upload-sessions` | user/admin | create a resumable upload session |
+| `GET` | `/api/upload-sessions/{id}` | owner/admin | session status + `nextExpectedOffset` |
+| `PUT` | `/api/upload-sessions/{id}/chunks?offset=n` | owner | append one chunk (raw body) |
+| `POST` | `/api/upload-sessions/{id}/finalize` | owner | complete the session into a normal file |
+| `DELETE` | `/api/upload-sessions/{id}` | owner | abort, discards the partial upload |
+| `GET` | `/api/admin/audit-log` | admin | paginated + filtered audit trail |
 | `GET` | `/health/live` | none | process liveness only |
 | `GET` | `/health/ready` | none | DB + filesystem readiness |
 | `POST` | `/api/auth/mock-token` | none | dev/demo only, see above |
 | `GET` | `/api/auth/demo-identities` | none | dev/demo only |
+
+ETag: `GET`/`HEAD /api/files/{id}/download` and `/preview` return a strong `ETag` (the
+file's own SHA-256, quoted) and `Last-Modified` (its `CreatedAtUtc`), and honor
+`If-None-Match` (→ `304`, empty body), `If-Range`, and `Cache-Control: private, no-cache`
+(never cacheable by a shared/proxy cache). Authorization is always checked before any
+conditional-request short-circuit, so a stale ETag for a file that has since been
+hard-deleted (or that belongs to someone else) still `404`s — it never `304`s.
 
 Get a token and upload a file:
 
@@ -422,14 +437,14 @@ Commands a reviewer can run, and what actually happened when they were run here:
 | Check | Command | Result |
 |---|---|---|
 | Backend restore + build | `dotnet build` (solution root) | **Passed** — 0 errors, 0 warnings across all 6 projects |
-| Backend unit tests | `dotnet test tests/FileStorage.UnitTests` | **Passed** — 58/58 (filename sanitization, tag normalization/matching, domain rules, path containment, streaming stage/discard + size-cap cleanup, storage-key collision detection + retry, cancellation-compensation regression, SHA-256 correctness, health probe, reconciliation orphan/missing-content matching + grace-period exclusion, maintenance-lock acquire/conflict/release) |
-| Backend integration tests | `dotnet test tests/FileStorage.IntegrationTests` | **Passed** — 19/19, against **real SQL Server LocalDB** (not EF Core InMemory) with real migrations applied per test run; covers upload/download byte integrity, both multipart field orders (tags before/after the file part), pagination/filters, cross-user 404, admin access, soft-delete lifecycle including the two-step hard-delete conflict, the server-backed admin deleted-files listing surviving a fresh-client "reload" and rejecting non-admins, oversized upload 413, missing-file-part 400, Range 206 and 416 |
+| Backend unit tests | `dotnet test tests/FileStorage.UnitTests` | **Passed — 61/61, re-run and confirmed 2026-09-17** (filename sanitization, tag normalization/matching, domain rules, path containment, streaming stage/discard + size-cap cleanup, storage-key collision detection + retry, cancellation-compensation regression, SHA-256 correctness, health probe, reconciliation orphan/missing-content matching + grace-period exclusion, maintenance-lock acquire/conflict/release, resumable-upload expiry cleanup + concurrent-chunk-append serialization, audit-write-failure never propagates to the calling operation) |
+| Backend integration tests | `dotnet test tests/FileStorage.IntegrationTests` | **Passed — 45/45, re-run and confirmed 2026-09-17** against **real SQL Server LocalDB** (not EF Core InMemory) with real migrations applied per test run; covers upload/download byte integrity, both multipart field orders (tags before/after the file part), pagination/filters including UTC-correct date-range boundaries, cross-user 404, admin access, soft-delete lifecycle including the two-step hard-delete conflict, the server-backed admin deleted-files listing surviving a fresh-client "reload" and rejecting non-admins, oversized upload 413, missing-file-part 400, Range 206 and 416, ETag/conditional-request semantics, a readiness-probe genuine-failure case, correlation-ID-in-application-log-entry verification, and the full resumable-upload protocol including a genuine cross-process restart-recovery test. This run is current, dated evidence that the resumable-upload, audit-log, and ETag-caching suites pass — it supersedes any earlier note that those suites were unverified. |
 | Reconciliation command | `dotnet run --project src/FileStorage.Api -- --reconcile [--delete-orphans]` | **Passed** — verified against a staged scenario (see "Database/filesystem reconciliation" above): correctly reported one orphan file and one missing-content row while excluding a third healthy file; `--delete-orphans` was refused with exit code `4` while the API held the maintenance lock (orphan confirmed untouched), then succeeded once the API was stopped, deleting only the orphan and leaving the healthy file byte-identical and the missing-content row still flagged |
 | Maintenance lock unit tests | `dotnet test tests/FileStorage.UnitTests --filter FullyQualifiedName~MaintenanceLock` | **Passed** — 3/3, verifying acquire/conflict/release semantics of the OS-level exclusive lock directly |
 | Frontend production build | `cd frontend && npx ng build --configuration production` | **Passed** |
-| Frontend unit tests | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless` | **Passed** — 8/8 (`AuthService` session lifecycle, the auth interceptor's URL-scoped header attachment, `FilesService` query building / filename parsing / 415-as-non-error preview handling) |
-| End-to-end tests | `cd tests/e2e && npx playwright test` (with the API and `ng serve` both running) | **Passed** — 3/3, real browser (Chromium) against the real running API: (1) login → upload via file input → appears in list → download → SHA-256-verified byte match; (2) admin login → upload → soft delete → **reload the page** → find the file via the server-backed admin "Deleted files" panel → hard delete → row gone, confirmed on a second reload; (3) an ordinary user sees no deleted-files panel in the UI and a direct authenticated call to `GET /api/files/deleted` returns 403 |
-| Docker Compose build/up | `docker compose up --build` | **Blocked — not run.** Docker is not installed in the environment this was built in (`docker: command not found`, rechecked). The Dockerfiles and `docker-compose.yml` were written and reviewed but not execution-verified. See [Known limitations](#known-limitations). |
+| Frontend unit tests | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless` | **Passed — 11/11, re-run and confirmed 2026-09-17** (`AuthService` session lifecycle, the auth interceptor's URL-scoped header attachment, `FilesService` query building / filename parsing / 415-as-non-error preview handling — the suite grew from 8 to 11 specs as resumable-upload frontend code was added) |
+| End-to-end tests | `cd tests/e2e && npx playwright test` (with the API and `ng serve` both running) | **Passed — 3/3 at the time these specs were authored.** Not re-run in the 2026-09-17 documentation pass — `tests/e2e/test-results/` is empty, so there is no fresh execution evidence for that date; treat the E2E result as carried forward, not re-verified today. Covers: (1) login → upload via file input → appears in list → download → SHA-256-verified byte match; (2) admin login → upload → soft delete → **reload the page** → find the file via the server-backed admin "Deleted files" panel → hard delete → row gone, confirmed on a second reload; (3) an ordinary user sees no deleted-files panel in the UI and a direct authenticated call to `GET /api/files/deleted` returns 403 |
+| Docker Compose build/up | `docker compose up --build` | **Blocked — not run, rechecked 2026-09-17.** The Docker CLI is now present (`docker --version` → `Docker version 29.8.0`), so the earlier "Docker not installed" finding no longer holds — but the daemon is not reachable: `docker images` fails with `request returned 500 Internal Server Error ... dockerDesktopLinuxEngine/_ping`, i.e. Docker Desktop's engine isn't running/accessible from this shell. `docker compose config` does parse `docker-compose.yml` successfully (no syntax errors), but no image was built and no container was started. "The documented startup flow works without undocumented manual fixes" remains unverified. See [Known limitations](#known-limitations). |
 
 Manual verification performed in addition to the above: `curl`-driven smoke tests of
 every endpoint (upload, list, download, Range, preview unsupported-type fallback,
@@ -491,16 +506,160 @@ environment-specific background-process issue described below):
 - A "directly navigable preview page" needing a supporting metadata endpoint (mentioned
   in PROMPT.md §7) is `GET /api/files/{id}`, documented above as a supporting endpoint,
   not part of the assessment's core four CRUD-ish endpoints.
-- Bonus features (resumable uploads, audit log, ETag caching) were **not** implemented,
-  per PROMPT.md §14's instruction to complete required behavior before optional work
-  and given the time already spent on the required scope.
+- All three optional bonus features (resumable uploads, audit log, ETag-based caching)
+  were subsequently implemented and tested, in a later review pass that explicitly
+  requested them as required deliverables for that pass. See "Bonus features" below.
+
+## Bonus features
+
+### Resumable uploads
+
+Protocol (`POST/GET/PUT/POST/DELETE /api/upload-sessions...`, full route table above):
+
+1. `POST /api/upload-sessions` with `{ fileName, contentType, totalSizeBytes, tags }`
+   creates a session (`UploadSessions` table row: owner, declared total size, received
+   bytes, status, expiry) and returns `nextExpectedOffset: 0`.
+2. `PUT /api/upload-sessions/{id}/chunks?offset={n}` with the raw chunk bytes as the
+   request body appends at exactly `offset`, which must equal the session's current
+   `nextExpectedOffset` (its `ReceivedBytes`). A chunk is streamed straight to a
+   per-session temp file (`_storage*/​_uploadsessions/{id}.part`) in fixed 80 KB reads —
+   never buffered whole in memory, regardless of chunk or file size. Concurrent chunk
+   requests for the *same* session are serialized by an in-process lock (documented
+   limitation: this is per-instance, not distributed — see below).
+3. `GET /api/upload-sessions/{id}` returns current status, for a client to resume after
+   a dropped connection or a page reload: re-fetch `nextExpectedOffset`, then continue
+   sending chunks from there.
+4. `POST /api/upload-sessions/{id}/finalize`, once `ReceivedBytes == TotalSizeBytes`,
+   streams the assembled temp file to compute its SHA-256, then commits it through the
+   exact same atomic temp-then-rename path a normal upload uses, and creates the
+   `StoredObjects` row. A second `finalize` call `409`s (the session is no longer
+   `InProgress`) — it cannot create a duplicate file.
+5. `DELETE /api/upload-sessions/{id}` aborts and discards the partial temp file.
+
+Ordering/edge cases: a chunk at the wrong offset `409`s with the correct
+`nextExpectedOffset` in the message; a chunk that exactly replays bytes already durable
+(offset less than the current length) is accepted idempotently without re-writing,
+so a client that resends a chunk after not seeing its response doesn't corrupt state.
+Session state lives in SQL Server, not process memory, so it — and the partial file on
+disk — survive a backend restart; a client resumes against the new process exactly as
+it would resume after any other interruption. Only the session's owner can append
+chunks, finalize, or abort (admin included, this app's admin bypass does not extend to
+someone else's in-progress upload); `GetStatus` does allow admin read access,
+consistent with admin visibility elsewhere in the app. Expired (`TTL` = 24h by default,
+`ResumableUpload:SessionTimeToLiveHours`) `InProgress` sessions are swept by
+`ResumableUploadService.CleanupExpiredSessionsAsync`, which discards only their own
+partial temp file and never touches a session still within its TTL; this is exposed as
+a method for now (call it from an admin/maintenance path or a scheduled job), not wired
+into an automatic background `IHostedService` — see limitations.
+
+Frontend: `frontend/src/app/storage/services/resumable-upload.service.ts` +
+`upload.component.ts`. Files at or above 20 MiB automatically use the chunked protocol
+(2 MiB chunks; visible "Resumable" badge); smaller files keep using the simpler one-shot
+multipart POST, which has less overhead for small files. Retrying a failed resumable
+upload re-queries the session's actual server-side progress and continues from there —
+it does not restart from byte 0, and the UI says so explicitly.
+
+Verified: `tests/FileStorage.IntegrationTests/ResumableUploadTests.cs` (in-order
+chunking → finalize with matching checksum and byte-for-byte downloaded content; wrong
+offset → 409; idempotent duplicate-chunk replay; finalize-before-complete → 409;
+double-finalize does not duplicate the file; cross-user session access denied; abort
+then reject further chunks/finalize; **and a genuine restart-recovery test** that
+uploads half a file against one `WebApplicationFactory`/host instance, disposes it, then
+resumes against a *second*, independent instance pointed at the same storage
+root/database — proving durability across a real process boundary, not just in-memory
+state). `tests/FileStorage.UnitTests/Application/ResumableUploadServiceTests.cs` covers
+expiry cleanup (only past-TTL sessions touched) and a bounded 8-way concurrent-chunk-
+append test proving the per-session lock serializes writes without corrupting or losing
+bytes. Also verified through the real browser UI (see the latest QA report under
+`Reports and evidence` for exact evidence paths): a 25 MiB file generated client-side,
+uploaded via the real Angular upload component, shown with the "Resumable" badge, and
+its post-finalize server-reported checksum confirmed to exactly match a fresh SHA-256
+of the downloaded bytes.
+
+Known limitations: the per-session chunk-append lock is in-process only (a
+multi-instance/load-balanced deployment would need a distributed lock instead — e.g. a
+SQL Server application lock — to prevent two instances from both accepting a chunk for
+the same session); expiry cleanup is on-demand (a method to call), not a scheduled
+background job, mirroring the existing `--reconcile` command's same on-demand design
+philosophy elsewhere in this codebase.
+
+### Audit log
+
+Persists one row per meaningful operation (`AuditLogEntries` table): actor user id,
+actor role, operation name (`FileUpload`, `FileSoftDelete`, `FileHardDelete`,
+`ResumableUploadFinalize`), resource id/type, outcome, an optional short detail string
+(never file contents, tokens, or secrets), the request's correlation id, and a UTC
+timestamp. `ResourceId` is a **plain string column with no foreign key** to
+`StoredObjects` on purpose: an audit entry must remain readable after the file it
+describes has been hard-deleted, and a real FK (even with `ON DELETE SET NULL`) would
+either block the delete or destroy the resource-id trail. Writes are **best-effort** —
+`AuditLogWriter.RecordAsync` catches and logs any persistence failure instead of
+throwing, so a transient audit-table problem can never fail or roll back the file
+operation it's describing; this is a deliberate choice (a compliance/visibility aid
+should not become an availability risk for the core product), not an oversight.
+
+Read access: `GET /api/admin/audit-log` (paginated, filterable by actor/operation/
+resource id/date range), `[Authorize(Roles = Admin)]` — a normal user gets `403`.
+There is no write or delete endpoint at all for audit data through the API, by any
+role — the only way entries are created is internally, by the operations that emit
+them.
+
+Verified: `tests/FileStorage.IntegrationTests/AuditLogTests.cs` — an upload produces a
+`FileUpload` entry whose `CorrelationId` matches that exact request's own response
+header; soft-delete then hard-delete of the same file produce `FileSoftDelete` and
+`FileHardDelete` entries that remain queryable by `resourceId` **after** the file row
+is physically gone; a non-admin gets `403` reading the log and has no route available to
+alter it; actor/operation filtering returns only matching rows.
+
+Known limitation: no cryptographic tamper-evidence (hash chaining, signing) is
+implemented or claimed — an administrator with direct database access could edit audit
+rows. This is a plain audit trail for operational visibility, not a tamper-proof ledger.
+
+### ETag-based caching
+
+`GET`/`HEAD /api/files/{id}/download` and `GET /api/files/{id}/preview` return a
+**strong** `ETag` — the file's own SHA-256 checksum, quoted — rather than a weak,
+timestamp-derived one, because the checksum is exactly the representation identity
+that changes if and only if the bytes change (which, for this app's immutable-once-
+uploaded content model, is never after creation). `Last-Modified` mirrors
+`CreatedAtUtc`. `Cache-Control: private, no-cache` is set explicitly so a shared/proxy
+cache can never store or replay these per-user, authenticated responses across users,
+while still allowing the browser's own conditional-revalidation flow (hence
+`no-cache`, not `no-store`: the browser is *allowed* to keep a copy but must always
+revalidate with `If-None-Match` before reusing it). Conditional-request evaluation
+(`If-None-Match` → `304` with an empty body, `If-Range` interaction with `Range`) is
+ASP.NET Core's own built-in `PhysicalFileResult` behavior, driven by the `EntityTag`/
+`LastModified` properties this app sets — not custom-written 304 logic.
+
+Authorization is always resolved **before** a `PhysicalFileResult` (and therefore
+before any conditional-request short-circuit) is even constructed: `FileAccessService`
+throws `404` for a nonexistent, someone-else's, or already-inaccessible file before the
+controller action ever reaches the point of setting an `ETag`. A stale `If-None-Match`
+value for a file that has since been hard-deleted, or that never belonged to the
+caller, still correctly `404`s — it can never `304`.
+
+Verified: `tests/FileStorage.IntegrationTests/ETagCachingTests.cs` — normal response
+carries a stable `ETag` and `private` `Cache-Control`; matching `If-None-Match` → `304`
+with an empty body (both `GET` and `HEAD`); non-matching → full `200` content; matching
+`If-Range` → `206` partial content with correct bytes; stale `If-Range` → full `200`
+(Range ignored, per RFC 7233); preview also carries an `ETag`; authorization is checked
+before any conditional logic runs (a nonexistent id with a syntactically valid
+`If-None-Match` still `404`s, never `304`s); a hard-deleted file's previously-valid
+`ETag` also still `404`s, never `304`s.
 
 ## Known limitations
 
-- **Docker remains an outstanding verification item.** No Docker installation is
-  available in the environment this was built in (`docker`/`docker compose`: command
-  not found — rechecked during the review pass that added the items below, still
-  unavailable). The Dockerfiles and `docker-compose.yml` were written carefully
+- **Docker remains an outstanding verification item.** Rechecked 2026-09-17: the Docker
+  CLI is present (`docker --version` → `Docker version 29.8.0`) and free disk space is
+  adequate (6.4 GB free on the build drive) — both earlier blockers ("Docker not
+  installed", "0.2 GB free") no longer apply and should not be repeated. The actual
+  current blocker is different: the Docker daemon/engine is not reachable from this
+  shell (`docker images` → `request returned 500 Internal Server Error ...
+  dockerDesktopLinuxEngine/_ping`), so no image can be built or container started here.
+  `docker compose config` does parse `docker-compose.yml` without error. Neither
+  starting the Docker Desktop engine nor further environment changes were attempted, as
+  that's outside the scope of a documentation pass. The Dockerfiles and
+  `docker-compose.yml` were written carefully
   (multi-stage builds, non-root API container user, health-check-gated startup
   ordering, named volumes for both SQL Server data and uploaded files, an nginx reverse
   proxy configured for `proxy_request_buffering off` so large uploads actually stream
@@ -525,9 +684,63 @@ environment-specific background-process issue described below):
   scheduled background job. An inconsistency from a crash at exactly the wrong moment
   will persist undetected until someone runs `--reconcile`; wiring it into a cron job
   or scheduled task is an operational step outside this codebase.
-- **No resumable uploads.** A network failure mid-upload requires a full re-upload; the
-  UI documents (rather than hides) the resulting duplicate-on-retry risk instead of
-  implementing upload resumption or an idempotency-key protocol.
+- **Resumable uploads: known, unfixed concurrency and validation gaps**, confirmed by
+  reading the current implementation (`ResumableUploadService`,
+  `UploadSessionsController`, `FileSystemStorage`) on 2026-09-17. These are documented
+  here as-is, not fixed, per this pass's scope (documentation only):
+  1. **No lock coordination between `FinalizeAsync`/`AbortAsync` and
+     `AppendChunkAsync`.** Only `FileSystemStorage.AppendChunkAsync` takes the
+     per-session semaphore; `FinalizeAsync` (which reads the assembled temp file to
+     hash and commit it) and `AbortAsync` (which discards it) do not acquire that same
+     lock. A chunk append racing a concurrent finalize/abort on the same session can
+     read a partially-written or already-deleted temp file.
+  2. **A rejected over-budget chunk can leave stray bytes that a retry silently
+     accepts.** `FileSystemStorage.AppendChunkAsync` writes each read buffer to disk
+     before the next iteration's over-budget check throws; the already-written bytes
+     from that rejected chunk are not rolled back, and `ReceivedBytes` is never
+     persisted for the failed call. A client retry at its last-known offset then hits
+     the idempotent-replay branch (`expectedOffset < currentLength` → return
+     `currentLength`), which reports success without re-validating those stray bytes
+     against any limit.
+  3. **The chunk endpoint's `[RequestSizeLimit]` is a hardcoded 32 MiB constant**
+     (`UploadSessionsController.MultipartHeaderLimits.MaxChunkRequestBodyBytes`),
+     independent of the configurable `ResumableUpload:MaxChunkSizeBytes` option
+     (default 8 MiB). Raising or lowering the configured chunk size does not change
+     this ASP.NET Core-level cap.
+  4. **The per-chunk size check is bypassed for chunked-transfer-encoding requests.**
+     `UploadSessionsController.AppendChunk` derives the declared chunk length from
+     `Request.ContentLength ?? 0`; when `Content-Length` is absent (chunked
+     transfer-encoding), the declared length is `0`, which is never greater than
+     `MaxChunkSizeBytes`, so `ResumableUploadService.AppendChunkAsync`'s per-chunk
+     limit check is a no-op for such requests. Only the cumulative session-total cap
+     in `FileSystemStorage.AppendChunkAsync` still applies.
+  5. **The per-session lock dictionary is never cleaned up.**
+     `FileSystemStorage.UploadSessionLocks` is a `static ConcurrentDictionary<string,
+     SemaphoreSlim>` keyed by temp-file path; entries are added on first chunk append
+     and never removed (not on finalize, abort, or expiry), so the dictionary grows
+     unboundedly under sustained resumable-upload traffic — a long-lived in-process
+     leak.
+  6. **Admin bypass is inconsistent with the rest of the app.** `GetStatusAsync` allows
+     an admin to view any user's session (`isAdmin` bypass), but `AppendChunkAsync`,
+     `FinalizeAsync`, and `AbortAsync` all use `IsOwnedBy` checks with no admin bypass —
+     an admin cannot append to, finalize, or abort another user's in-progress session,
+     unlike the admin-can-access-everything pattern elsewhere (e.g. `FileAccessService`
+     for ordinary downloads).
+  7. **`FinalizeAsync` re-hashes the whole assembled file** via
+     `FileSystemStorage.ComputeChecksumAsync`, a full second read pass over the
+     temp file, rather than maintaining an incremental SHA-256 across the
+     `AppendChunkAsync` writes — extra I/O proportional to file size on every finalize.
+  8. **`CommitWithCollisionRetryAsync` is duplicated** — the same 5-attempt
+     storage-key-collision-retry loop is implemented separately (not shared) in both
+     `UploadFileService` and `ResumableUploadService`.
+
+  None of these affect the one-shot upload path (files below the 20 MiB resumable
+  threshold), and the per-session chunk-append lock that does exist is per-instance,
+  not distributed — a multi-instance/load-balanced deployment would need a distributed
+  lock (e.g. a SQL Server application lock) instead. The original one-shot upload path
+  also has no idempotency-key protocol of its own — a network failure mid-upload there
+  still requires a full re-upload, and the UI documents the resulting
+  duplicate-on-retry risk rather than hiding it.
 - **Test database cleanup on LocalDB is best-effort.** Each integration test method
   creates its own uniquely-named LocalDB database for full isolation, and its `Dispose`
   attempts `EnsureDeleted()` after clearing SqlClient's connection pool — but on
@@ -547,13 +760,18 @@ environment-specific background-process issue described below):
   detected proactively rather than only when an operator remembers to run it.
 - Optionally alerting/paging when `--reconcile` finds missing-content rows (exit code
   `3`), since those specifically require a human recovery decision.
-- Resumable uploads (assessment bonus item) via a chunked-upload protocol with an
-  idempotency key, once the core upload/download/list/delete surface is stable in
-  production use.
-- An audit log table recording who did what to which `StoredObject` and when,
-  independent of the mutable `StoredObjects` row itself.
-- ETag-based caching for `GET /api/files/{id}/download` and `/preview`, using the
-  stored SHA-256 checksum as a natural strong ETag.
 - A normalized tag table if arbitrary multi-tag boolean queries (AND/OR across tags)
   become a real requirement — the current boxed-delimiter column intentionally doesn't
   support that.
+- For resumable uploads specifically (see [Known limitations](#known-limitations) for
+  the full list found on review): a distributed session lock for multi-instance
+  deployments; closing the finalize/abort-vs-append-chunk race with a shared lock
+  scope; deriving the `[RequestSizeLimit]` from `ResumableUpload:MaxChunkSizeBytes`
+  instead of a hardcoded constant; enforcing the per-chunk limit against actual bytes
+  read rather than the declared `Content-Length`; evicting entries from the
+  per-session lock dictionary on finalize/abort/expiry; extending the admin bypass to
+  append/finalize/abort; incremental hashing during chunk writes instead of a second
+  full-file read at finalize; and extracting the duplicated collision-retry logic into
+  a shared helper.
+- (Resumable uploads, audit log, and ETag-based caching themselves are already
+  implemented — see "Bonus features" above, not a future item.)

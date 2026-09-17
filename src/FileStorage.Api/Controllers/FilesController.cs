@@ -33,11 +33,6 @@ public sealed class FilesController : ControllerBase
         _currentUser = currentUser;
     }
 
-    // Query-string DateTime values without an explicit offset bind with Kind=Unspecified.
-    // DateTime.ToUniversalTime() treats Unspecified as the SERVER's local time zone, which
-    // silently shifts date-range filter boundaries by the server's UTC offset. The API's
-    // date-range filters are always UTC wall-clock boundaries (matching CreatedAtUtc), so an
-    // Unspecified/Local value must be reinterpreted as UTC, not converted from local time.
     private static DateTime? ToUtcOrNull(DateTime? value) =>
         value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : null;
 
@@ -97,12 +92,23 @@ public sealed class FilesController : ControllerBase
     }
 
     [HttpGet("{id:guid}/download")]
+    [HttpHead("{id:guid}/download")]
     public async Task<IActionResult> Download(Guid id, CancellationToken cancellationToken)
     {
         var info = await _fileAccessService.GetDownloadInfoAsync(id, _currentUser.UserId, _currentUser.IsAdmin, cancellationToken);
 
         Response.Headers[HeaderNames.XContentTypeOptions] = "nosniff";
-        return PhysicalFile(info.PhysicalPath, info.ContentType, info.SanitizedFileName, enableRangeProcessing: true);
+
+        Response.Headers[HeaderNames.CacheControl] = "private, no-cache";
+
+        return new PhysicalFileResult(info.PhysicalPath, info.ContentType)
+        {
+            FileDownloadName = info.SanitizedFileName,
+            EnableRangeProcessing = true,
+
+            EntityTag = new Microsoft.Net.Http.Headers.EntityTagHeaderValue($"\"{info.Checksum}\""),
+            LastModified = new DateTimeOffset(DateTime.SpecifyKind(info.CreatedAtUtc, DateTimeKind.Utc)),
+        };
     }
 
     [HttpGet("{id:guid}/preview")]
@@ -117,7 +123,14 @@ public sealed class FilesController : ControllerBase
 
         Response.Headers[HeaderNames.XContentTypeOptions] = "nosniff";
         Response.Headers[HeaderNames.ContentDisposition] = "inline";
-        return PhysicalFile(info.PhysicalPath!, info.ContentType!, enableRangeProcessing: true);
+        Response.Headers[HeaderNames.CacheControl] = "private, no-cache";
+
+        return new PhysicalFileResult(info.PhysicalPath!, info.ContentType!)
+        {
+            EnableRangeProcessing = true,
+            EntityTag = new Microsoft.Net.Http.Headers.EntityTagHeaderValue($"\"{info.Checksum}\""),
+            LastModified = new DateTimeOffset(DateTime.SpecifyKind(info.CreatedAtUtc!.Value, DateTimeKind.Utc)),
+        };
     }
 
     [HttpDelete("{id:guid}")]

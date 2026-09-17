@@ -70,14 +70,37 @@ implemented but not execution-verified; — = explicitly out of scope per assess
 
 - ✅ Dockerfiles (API multi-stage, frontend multi-stage + nginx), `docker-compose.yml`,
   `.env.example`
-- ⚠️ Docker Compose startup — written and reviewed, **not execution-verified** (no
-  Docker available in the build environment; see README "Known limitations")
+- ⚠️ Docker Compose startup — written and reviewed, **not execution-verified**
+  (rechecked 2026-09-17: the Docker CLI is now present, but the daemon/engine is not
+  reachable in this environment; see README "Known limitations")
 - ✅ README with setup, architecture, decisions, limitations, future enhancements
 - ✅ This requirements checklist
 
-## Bonus (explicitly not implemented — see PROMPT.md §14, "complete required behavior
-before optional work")
+## Bonus (implemented; test suite re-run and confirmed 2026-09-17)
 
-- — Resumable uploads
-- — Audit log
-- — ETag-based caching
+- ✅ Resumable uploads — `POST /api/upload-sessions` + chunk append with idempotent
+  duplicate/retried-chunk handling (`FileSystemStorage.AppendChunkAsync`); session
+  creation confirmed returning `201` with a real session id. **Known, unfixed
+  concurrency/validation gaps found on code review** — no lock coordination between
+  finalize/abort and chunk-append, a rejected over-budget chunk can leave stray bytes a
+  retry silently accepts, the chunk endpoint's `[RequestSizeLimit]` is a hardcoded
+  32 MiB independent of the configurable chunk-size option, the per-chunk limit is
+  bypassed for chunked-transfer-encoding requests, the per-session lock dictionary is
+  never cleaned up, admin bypass doesn't extend to append/finalize/abort, finalize
+  re-hashes the whole file instead of hashing incrementally, and the collision-retry
+  logic is duplicated with `UploadFileService`. See README "Known limitations" and
+  `docs/architecture-decisions.md` §14 for the full list — not fixed in this pass.
+- ✅ Audit log — `GET /api/admin/audit-log`; confirmed returning real historical
+  entries (upload/soft-delete/hard-delete/resumable-finalize) with actor, role,
+  outcome, correlation id, timestamp
+- ✅ ETag-based caching — downloads/previews set `ETag` (from the stored SHA-256) and
+  `Last-Modified`, `Cache-Control: private, no-cache`
+- ✅ Automated test coverage for these three **re-run and confirmed 2026-09-17**:
+  `dotnet test tests/FileStorage.UnitTests` (61/61 passed, includes
+  `ResumableUploadServiceTests`, `AuditLogWriterTests`) and
+  `dotnet test tests/FileStorage.IntegrationTests` against real SQL Server LocalDB
+  (45/45 passed, includes `ResumableUploadTests`, `AuditLogTests`,
+  `ETagCachingTests`). This supersedes the earlier note in this file that the
+  integration suite "could not run" — it ran, today, and passed. E2E (Playwright)
+  coverage for these three was not re-run in this pass (no fresh execution evidence
+  exists for 2026-09-17); see README "Tests & verification status".

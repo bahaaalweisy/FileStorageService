@@ -55,6 +55,13 @@ public sealed partial class StoragePathResolver
         return dir;
     }
 
+    public string GetUploadSessionsDirectory()
+    {
+        var dir = Path.Combine(_rootFullPath, "_uploadsessions");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
     private bool IsContained(string fullPath)
     {
         var normalizedRoot = _rootFullPath + Path.DirectorySeparatorChar;

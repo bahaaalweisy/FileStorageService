@@ -332,3 +332,64 @@ and any other invocation of `--reconcile --delete-orphans` against that root. It
 Treating the lock as "provably no writer anywhere is active" would be an overclaim;
 treating it as "no writer *from this application* is active" is the accurate,
 verified claim, and is what the README documents.
+
+## 14. Resumable uploads: known, open concurrency and validation gaps
+
+Unlike the other numbered decisions in this file, this section documents **unresolved
+issues**, not settled design choices — confirmed by reading the current implementation
+(`ResumableUploadService`, `UploadSessionsController`, `FileSystemStorage`) on
+2026-09-17, not fixed as part of this documentation pass. They are recorded here so a
+reviewer has an accurate picture of the bonus feature's maturity relative to the core
+upload/download/delete path, which has been through multiple review-and-fix cycles
+(see §5 and §13 above); the resumable-upload path has not yet had an equivalent pass.
+
+1. **No lock coordination between `FinalizeAsync`/`AbortAsync` and
+   `AppendChunkAsync`.** The per-session `SemaphoreSlim` in
+   `FileSystemStorage.UploadSessionLocks` is acquired only inside `AppendChunkAsync`.
+   `ResumableUploadService.FinalizeAsync` (which reads the assembled temp file to hash
+   and commit it) and `AbortAsync` (which deletes it) never take that lock, so a chunk
+   append racing a concurrent finalize or abort on the same session can observe a
+   partially-written or already-deleted temp file.
+2. **A rejected over-budget chunk can leave stray bytes on disk that a retry silently
+   accepts.** In `FileSystemStorage.AppendChunkAsync`, each buffer read is written to
+   the temp file before the next iteration's cumulative-size check throws
+   `PayloadTooLargeAppException`; the bytes already written for the rejected chunk are
+   not rolled back, and the caller's `ReceivedBytes` is never persisted for a failed
+   call (the exception propagates before `session.RecordChunkAppended` runs). A client
+   retry at its last-known offset then lands in the idempotent-replay branch
+   (`expectedOffset < currentLength` → return `currentLength` without writing),
+   which reports success without re-validating those stray bytes.
+3. **The chunk endpoint's `[RequestSizeLimit]` is a hardcoded constant, not derived
+   from configuration.** `UploadSessionsController.MultipartHeaderLimits
+   .MaxChunkRequestBodyBytes` is `32L * 1024 * 1024`, independent of the configurable
+   `ResumableUpload:MaxChunkSizeBytes` option (default 8 MiB). Changing the configured
+   chunk size does not change this framework-level cap.
+4. **The per-chunk size check is a no-op for chunked-transfer-encoding requests.**
+   `AppendChunk` derives the declared chunk length from `Request.ContentLength ?? 0`;
+   when `Content-Length` is absent, the declared length is `0`, which never exceeds
+   `MaxChunkSizeBytes`, so `ResumableUploadService.AppendChunkAsync`'s per-chunk check
+   is bypassed for such requests. Only the cumulative session-total cap in
+   `FileSystemStorage.AppendChunkAsync` still applies in that case.
+5. **The per-session lock dictionary is never cleaned up.**
+   `FileSystemStorage.UploadSessionLocks` is a `static
+   ConcurrentDictionary<string, SemaphoreSlim>`; entries are added on first chunk
+   append and never removed on finalize, abort, or expiry — an unbounded, long-lived
+   in-process leak under sustained resumable-upload traffic.
+6. **Admin bypass is inconsistent with the rest of the app.** `GetStatusAsync` allows
+   an admin to view any user's session, but `AppendChunkAsync`, `FinalizeAsync`, and
+   `AbortAsync` all check `IsOwnedBy` with no admin bypass — unlike the
+   admin-sees-everything pattern used elsewhere (e.g. `FileAccessService` for ordinary
+   downloads, §6 above).
+7. **`FinalizeAsync` re-hashes the whole assembled file** via
+   `FileSystemStorage.ComputeChecksumAsync`, a full second read pass over the temp
+   file, instead of maintaining an incremental SHA-256 across the `AppendChunkAsync`
+   writes the way `UploadFileService`/`FileSystemStorage.SaveNewAsync` already does
+   for the one-shot upload path (§5 above) — extra I/O proportional to file size on
+   every finalize.
+8. **`CommitWithCollisionRetryAsync` is duplicated**, not shared: the same 5-attempt
+   storage-key-collision-retry loop exists separately in both `UploadFileService` and
+   `ResumableUploadService`.
+
+None of these affect the one-shot upload path. The distributed-lock gap (item 1's
+sibling limitation — the lock that *does* exist is per-instance only) is also called
+out in the README "Known limitations" section, along with all eight items above.

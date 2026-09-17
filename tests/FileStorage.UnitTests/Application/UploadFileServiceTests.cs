@@ -32,7 +32,7 @@ public class UploadFileServiceTests : IDisposable
     }
 
     private UploadFileService CreateService(IStorageKeyGenerator keyGenerator) =>
-        new(_fileStorage, _repository, keyGenerator, _clock, Options.Create(new UploadPolicyOptions()), NullLogger<UploadFileService>.Instance);
+        new(_fileStorage, _repository, keyGenerator, _clock, Options.Create(new UploadPolicyOptions()), NullLogger<UploadFileService>.Instance, new NoOpAuditLogWriter());
 
     [Fact]
     public async Task FinalizeAsync_RetriesWithNewKey_WhenFirstGeneratedKeyCollides()
@@ -64,7 +64,7 @@ public class UploadFileServiceTests : IDisposable
     public async Task StageAsync_RejectsDisallowedExtension_WithoutWritingAnyTempFile()
     {
         var policy = new UploadPolicyOptions { AllowedExtensions = new[] { ".txt" } };
-        var service = new UploadFileService(_fileStorage, _repository, new SequenceKeyGenerator("k1"), _clock, Options.Create(policy), NullLogger<UploadFileService>.Instance);
+        var service = new UploadFileService(_fileStorage, _repository, new SequenceKeyGenerator("k1"), _clock, Options.Create(policy), NullLogger<UploadFileService>.Instance, new NoOpAuditLogWriter());
 
         using var content = new MemoryStream(Encoding.UTF8.GetBytes("won't be read"));
 
@@ -81,7 +81,7 @@ public class UploadFileServiceTests : IDisposable
     public async Task FinalizeAsync_CompensatesCommittedFile_WhenPersistenceIsCancelled()
     {
         var repository = new FakeRepository { ThrowCancellationOnSave = true };
-        var service = new UploadFileService(_fileStorage, repository, new SequenceKeyGenerator("cancel-key-AAAAAAAAAAAA"), _clock, Options.Create(new UploadPolicyOptions()), NullLogger<UploadFileService>.Instance);
+        var service = new UploadFileService(_fileStorage, repository, new SequenceKeyGenerator("cancel-key-AAAAAAAAAAAA"), _clock, Options.Create(new UploadPolicyOptions()), NullLogger<UploadFileService>.Instance, new NoOpAuditLogWriter());
 
         using var content = new MemoryStream(Encoding.UTF8.GetBytes("will be cancelled after commit"));
         var staged = await service.StageAsync("cancelled.txt", "text/plain", content, CancellationToken.None);
@@ -127,6 +127,12 @@ public class UploadFileServiceTests : IDisposable
     {
         public FakeClock(DateTime utcNow) => UtcNow = utcNow;
         public DateTime UtcNow { get; }
+    }
+
+    private sealed class NoOpAuditLogWriter : IAuditLogWriter
+    {
+        public Task RecordAsync(string operation, string? resourceId, string? resourceType, string outcome, string? detail, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
     }
 
     private sealed class FakeRepository : IStoredObjectRepository

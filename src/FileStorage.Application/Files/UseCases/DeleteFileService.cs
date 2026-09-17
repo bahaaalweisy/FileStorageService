@@ -12,13 +12,15 @@ public sealed class DeleteFileService
     private readonly IFileStorage _fileStorage;
     private readonly IClock _clock;
     private readonly ILogger<DeleteFileService> _logger;
+    private readonly IAuditLogWriter _auditLog;
 
-    public DeleteFileService(IStoredObjectRepository repository, IFileStorage fileStorage, IClock clock, ILogger<DeleteFileService> logger)
+    public DeleteFileService(IStoredObjectRepository repository, IFileStorage fileStorage, IClock clock, ILogger<DeleteFileService> logger, IAuditLogWriter auditLog)
     {
         _repository = repository;
         _fileStorage = fileStorage;
         _clock = clock;
         _logger = logger;
+        _auditLog = auditLog;
     }
 
     public async Task SoftDeleteAsync(Guid id, string userId, bool isAdmin, CancellationToken cancellationToken)
@@ -40,6 +42,8 @@ public sealed class DeleteFileService
 
         await _repository.SaveChangesAsync(cancellationToken);
         _logger.LogInformation("Soft delete completed. FileId={FileId} By={UserId}", id, userId);
+
+        await _auditLog.RecordAsync("FileSoftDelete", id.ToString(), "StoredObject", AuditOutcome.Success, null, cancellationToken);
     }
 
     public async Task HardDeleteAsync(Guid id, string userId, bool isAdmin, CancellationToken cancellationToken)
@@ -66,5 +70,7 @@ public sealed class DeleteFileService
         await _repository.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation("Hard delete completed. FileId={FileId} By={UserId}", id, userId);
+
+        await _auditLog.RecordAsync("FileHardDelete", id.ToString(), "StoredObject", AuditOutcome.Success, null, cancellationToken);
     }
 }
