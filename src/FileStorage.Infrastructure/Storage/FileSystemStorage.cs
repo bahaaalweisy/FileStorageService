@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using FileStorage.Application.Abstractions;
 using FileStorage.Application.Exceptions;
@@ -12,6 +13,8 @@ public sealed class FileSystemStorage : IFileStorage
     private readonly StoragePathResolver _paths;
     private readonly UploadPolicyOptions _policy;
     private readonly ILogger<FileSystemStorage> _logger;
+
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> UploadSessionLocks = new(StringComparer.OrdinalIgnoreCase);
 
     public FileSystemStorage(IOptions<StorageRootOptions> rootOptions, IOptions<UploadPolicyOptions> policy, ILogger<FileSystemStorage> logger)
     {
@@ -151,6 +154,72 @@ public sealed class FileSystemStorage : IFileStorage
 
             break;
         }
+    }
+
+    public string GetUploadSessionTempPath(Guid sessionId) =>
+        Path.Combine(_paths.GetUploadSessionsDirectory(), $"{sessionId:N}.part");
+
+    public async Task<long> AppendChunkAsync(string tempPath, long expectedOffset, Stream chunkData, long maxTotalBytes, CancellationToken cancellationToken)
+    {
+        var lockObj = UploadSessionLocks.GetOrAdd(tempPath, _ => new SemaphoreSlim(1, 1));
+        await lockObj.WaitAsync(cancellationToken);
+        try
+        {
+            var currentLength = File.Exists(tempPath) ? new FileInfo(tempPath).Length : 0;
+
+            if (currentLength != expectedOffset)
+            {
+
+                if (expectedOffset < currentLength)
+                {
+                    return currentLength;
+                }
+
+                throw new ChunkOffsetMismatchException(currentLength);
+            }
+
+            var buffer = new byte[_policy.CopyBufferSizeBytes];
+            await using var fileStream = new FileStream(
+                tempPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None,
+                bufferSize: 1, useAsync: true);
+            fileStream.Seek(0, SeekOrigin.End);
+
+            long written = currentLength;
+            int bytesRead;
+            while ((bytesRead = await chunkData.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
+            {
+                written += bytesRead;
+                if (written > maxTotalBytes)
+                {
+                    throw new PayloadTooLargeAppException(
+                        $"Upload session exceeds the configured maximum of {maxTotalBytes} bytes.");
+                }
+
+                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+            }
+
+            await fileStream.FlushAsync(cancellationToken);
+            return written;
+        }
+        finally
+        {
+            lockObj.Release();
+        }
+    }
+
+    public async Task<string> ComputeChecksumAsync(string tempPath, CancellationToken cancellationToken)
+    {
+        using var incrementalHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[_policy.CopyBufferSizeBytes];
+
+        await using var stream = new FileStream(tempPath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1, useAsync: true);
+        int bytesRead;
+        while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
+        {
+            incrementalHash.AppendData(buffer, 0, bytesRead);
+        }
+
+        return Convert.ToHexString(incrementalHash.GetHashAndReset()).ToLowerInvariant();
     }
 
     public async Task<FileSystemProbeResult> CheckReadWriteAsync(CancellationToken cancellationToken)

@@ -27,7 +27,7 @@ public sealed class FileAccessService
         var path = ResolvePathOrThrow(entity);
 
         var sanitizedName = FilenameSanitizer.Sanitize(entity.OriginalName, _policy.MaxOriginalFilenameLength);
-        return new DownloadInfoDto(path, entity.ContentType, sanitizedName, entity.SizeBytes);
+        return new DownloadInfoDto(path, entity.ContentType, sanitizedName, entity.SizeBytes, entity.Checksum, entity.CreatedAtUtc);
     }
 
     public async Task<StoredObjectDto> GetMetadataAsync(Guid id, string userId, bool isAdmin, CancellationToken cancellationToken)
@@ -46,7 +46,7 @@ public sealed class FileAccessService
         }
 
         var path = ResolvePathOrThrow(entity);
-        return new PreviewInfoDto(true, path, entity.ContentType, entity.SizeBytes, "OK");
+        return new PreviewInfoDto(true, path, entity.ContentType, entity.SizeBytes, "OK", entity.Checksum, entity.CreatedAtUtc);
     }
 
     private async Task<StoredObject> GetAccessibleOrThrowAsync(Guid id, string userId, bool isAdmin, CancellationToken cancellationToken)

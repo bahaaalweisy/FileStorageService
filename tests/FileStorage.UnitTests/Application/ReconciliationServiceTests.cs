@@ -161,5 +161,9 @@ public class ReconciliationServiceTests
         }
 
         public Task<FileSystemProbeResult> CheckReadWriteAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public string GetUploadSessionTempPath(Guid sessionId) => throw new NotImplementedException();
+        public Task<long> AppendChunkAsync(string tempPath, long expectedOffset, Stream chunkData, long maxTotalBytes, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<string> ComputeChecksumAsync(string tempPath, CancellationToken cancellationToken) => throw new NotImplementedException();
     }
 }

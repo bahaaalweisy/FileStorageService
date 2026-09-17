@@ -2,11 +2,14 @@ import { HttpEventType } from '@angular/common/http';
 import { Component, EventEmitter, Output, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { FilesService } from '../services/files.service';
+import { ResumableUploadService } from '../services/resumable-upload.service';
 import { formatBytes } from '../../shared/format-bytes';
 import { ToastService } from '../../shared/toast/toast.service';
 import { UploadItem } from './upload-item.model';
 
 const CLIENT_MAX_SIZE_BYTES = 200 * 1024 * 1024;
+
+const RESUMABLE_THRESHOLD_BYTES = 20 * 1024 * 1024;
 
 let nextClientId = 1;
 
@@ -47,7 +50,12 @@ let nextClientId = 1;
           <li class="upload-item">
             <div class="upload-item__info">
               <span class="upload-item__name">{{ item.file.name }}</span>
-              <span class="upload-item__size">{{ formatBytes(item.file.size) }}</span>
+              <span class="upload-item__size">
+                {{ formatBytes(item.file.size) }}
+                @if (item.resumable) {
+                  <span class="upload-item__resumable-badge" title="Uploaded in chunks; a retry resumes instead of restarting">Resumable</span>
+                }
+              </span>
             </div>
 
             @if (item.status === 'pending') {
@@ -58,7 +66,7 @@ let nextClientId = 1;
                 [(ngModel)]="item.tagsText"
                 [attr.aria-label]="'Tags for ' + item.file.name"
               />
-              <button type="button" (click)="startUpload(item)">Upload</button>
+              <button type="button" (click)="item.resumable ? startResumableUpload(item) : startUpload(item)">Upload</button>
             }
 
             @if (item.status === 'uploading') {
@@ -76,10 +84,17 @@ let nextClientId = 1;
               <div class="upload-item__error">
                 <span class="upload-item__status upload-item__status--error">{{ item.errorMessage }}</span>
                 <button type="button" (click)="retry(item)">Retry</button>
-                <p class="hint">
-                  If the upload actually completed on the server before this error, retrying will
-                  create a second copy — check the file list below before retrying.
-                </p>
+                @if (item.resumable && item.resumableSessionId) {
+                  <p class="hint">
+                    Resumable upload: retrying continues from {{ formatBytes(item.resumableReceivedBytes ?? 0) }}
+                    already received — it will not resend bytes already on the server.
+                  </p>
+                } @else {
+                  <p class="hint">
+                    If the upload actually completed on the server before this error, retrying will
+                    create a second copy — check the file list below before retrying.
+                  </p>
+                }
               </div>
             }
 
@@ -128,6 +143,15 @@ let nextClientId = 1;
     .upload-item__info { display: flex; flex-direction: column; min-width: 0; }
     .upload-item__name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .upload-item__size { font-size: 0.75rem; color: #888; }
+    .upload-item__resumable-badge {
+      margin-left: 0.4rem;
+      padding: 0.05rem 0.4rem;
+      border-radius: 1rem;
+      background: #eef4fc;
+      color: #1565c0;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
     .progress { grid-column: 1 / -1; height: 6px; background: #eee; border-radius: 3px; overflow: hidden; }
     .progress__bar { height: 100%; background: #1565c0; transition: width 0.2s; }
     .upload-item__status { font-size: 0.8rem; }
@@ -139,7 +163,9 @@ let nextClientId = 1;
 })
 export class UploadComponent {
   private readonly filesService = inject(FilesService);
+  private readonly resumableService = inject(ResumableUploadService);
   private readonly toast = inject(ToastService);
+  private readonly cancelledItems = new Set<string>();
 
   @Output() readonly uploaded = new EventEmitter<void>();
 
@@ -175,10 +201,19 @@ export class UploadComponent {
   }
 
   protected retry(item: UploadItem): void {
-    this.startUpload(item);
+    if (item.resumable) {
+      this.startResumableUpload(item);
+    } else {
+      this.startUpload(item);
+    }
   }
 
   remove(item: UploadItem): void {
+    this.cancelledItems.add(item.clientId);
+    if (item.resumable && item.resumableSessionId && item.status !== 'success') {
+
+      this.resumableService.abort(item.resumableSessionId).catch(() => {});
+    }
     this.items.update((list) => list.filter((i) => i.clientId !== item.clientId));
   }
 
@@ -189,6 +224,7 @@ export class UploadComponent {
       tagsText: '',
       status: 'pending',
       progressPercent: 0,
+      resumable: file.size >= RESUMABLE_THRESHOLD_BYTES,
     }));
 
     this.items.update((list) => [...list, ...newItems]);
@@ -231,6 +267,61 @@ export class UploadComponent {
         this.updateItem(item.clientId, { status: 'error', errorMessage: message });
       },
     });
+  }
+
+  protected async startResumableUpload(item: UploadItem): Promise<void> {
+    if (item.status === 'uploading') {
+      return;
+    }
+
+    this.cancelledItems.delete(item.clientId);
+    this.updateItem(item.clientId, { status: 'uploading', errorMessage: undefined });
+
+    const tags = item.tagsText
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    try {
+      let sessionId = item.resumableSessionId;
+      let startOffset = item.resumableReceivedBytes ?? 0;
+
+      if (!sessionId) {
+        const session = await this.resumableService.createSession(item.file, tags);
+        sessionId = session.sessionId;
+        startOffset = session.nextExpectedOffset;
+        this.updateItem(item.clientId, { resumableSessionId: sessionId, resumableReceivedBytes: startOffset });
+      } else {
+
+        const status = await this.resumableService.getStatus(sessionId);
+        startOffset = status.nextExpectedOffset;
+        this.updateItem(item.clientId, { resumableReceivedBytes: startOffset });
+      }
+
+      await this.resumableService.uploadChunks(
+        sessionId,
+        item.file,
+        startOffset,
+        (receivedBytes, totalBytes) => {
+          const percent = totalBytes > 0 ? Math.round((receivedBytes / totalBytes) * 100) : 0;
+          this.updateItem(item.clientId, { progressPercent: percent, resumableReceivedBytes: receivedBytes });
+        },
+        () => this.cancelledItems.has(item.clientId),
+      );
+
+      if (this.cancelledItems.has(item.clientId)) {
+        return;
+      }
+
+      await this.resumableService.finalize(sessionId);
+
+      this.updateItem(item.clientId, { status: 'success', progressPercent: 100 });
+      this.toast.success(`${item.file.name} uploaded.`);
+      this.uploaded.emit();
+    } catch (err: any) {
+      const message = err?.error?.detail ?? err?.error?.title ?? 'Upload failed.';
+      this.updateItem(item.clientId, { status: 'error', errorMessage: message });
+    }
   }
 
   private updateItem(clientId: string, patch: Partial<UploadItem>): void {

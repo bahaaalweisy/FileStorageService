@@ -1,4 +1,5 @@
 using FileStorage.Application.Abstractions;
+using FileStorage.Infrastructure.Audit;
 using FileStorage.Infrastructure.Persistence;
 using FileStorage.Infrastructure.Storage;
 using FileStorage.Infrastructure.Time;
@@ -21,6 +22,7 @@ public static class DependencyInjection
         });
 
         services.AddScoped<IStoredObjectRepository, StoredObjectRepository>();
+        services.AddScoped<IUploadSessionRepository, UploadSessionRepository>();
 
         services.AddOptions<StorageRootOptions>()
             .Bind(configuration.GetSection(StorageRootOptions.SectionName));
@@ -31,6 +33,9 @@ public static class DependencyInjection
         services.AddSingleton<IClock, SystemClock>();
 
         services.AddSingleton<IStorageInventory, FileSystemStorageInventory>();
+
+        services.AddScoped<IAuditLogWriter, AuditLogWriter>();
+        services.AddScoped<FileStorage.Application.Audit.IAuditLogReader, AuditLogReader>();
 
         return services;
     }

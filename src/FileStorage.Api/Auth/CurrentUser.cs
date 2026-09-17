@@ -10,6 +10,8 @@ public sealed class CurrentUser : ICurrentUser
 
     public bool IsAdmin { get; }
 
+    public string Role { get; }
+
     public CurrentUser(IHttpContextAccessor accessor)
     {
         var principal = accessor.HttpContext?.User;
@@ -17,5 +19,6 @@ public sealed class CurrentUser : ICurrentUser
             ?? principal?.FindFirstValue("sub")
             ?? string.Empty;
         IsAdmin = principal?.IsInRole(UserRole.Admin) ?? false;
+        Role = principal?.FindFirstValue(ClaimTypes.Role) ?? string.Empty;
     }
 }

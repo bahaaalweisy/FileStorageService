@@ -7,4 +7,8 @@ export interface UploadItem {
   status: UploadStatus;
   progressPercent: number;
   errorMessage?: string;
+
+  resumable?: boolean;
+  resumableSessionId?: string;
+  resumableReceivedBytes?: number;
 }

@@ -1,6 +1,7 @@
 using FileStorage.Application.Files.UseCases;
 using FileStorage.Application.Maintenance;
 using FileStorage.Application.Options;
+using FileStorage.Application.Uploads;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -13,11 +14,15 @@ public static class DependencyInjection
         services.AddOptions<UploadPolicyOptions>()
             .Bind(configuration.GetSection(UploadPolicyOptions.SectionName));
 
+        services.AddOptions<ResumableUploadOptions>()
+            .Bind(configuration.GetSection(ResumableUploadOptions.SectionName));
+
         services.AddScoped<UploadFileService>();
         services.AddScoped<ListFilesService>();
         services.AddScoped<FileAccessService>();
         services.AddScoped<DeleteFileService>();
         services.AddScoped<ReconciliationService>();
+        services.AddScoped<ResumableUploadService>();
 
         return services;
     }
